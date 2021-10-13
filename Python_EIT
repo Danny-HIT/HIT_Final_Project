@@ -1,0 +1,310 @@
+# First time installation #
+# 1.Install Python 3.9.X from https://www.python.org/downloads/ and allow PATH during the installation
+# 2.Run Command Prompt
+# 3.Install the next lines inside Command Prompt:
+#  python -m pip install --upgrade pip
+#  pip install --upgrade pip setuptools wheel
+#  pip install pyserial
+#  pip install inquirer
+#  pip install matplotlib
+#  pip install numpy (Should be installed already)
+#  pip install opencv-python
+# 4.locate the pyEIT folder and click on it. Hold "Shift" and click one the right with the mouse on the
+#   window. After that, click "Open in Windows Terminal"
+# 5.Install the next lines inside Command Prompt:
+#  python setup.py build
+#  python setup.py install
+# 6.You can start the program.
+
+#libs
+import serial
+import time
+import datetime
+import serial.tools.list_ports
+import msvcrt
+import struct
+import os
+import sys
+import glob
+import inquirer
+import numpy as np
+import matplotlib.pyplot as plt
+import pyEIT.pyeit.mesh as mesh
+from pyEIT.pyeit.eit.fem import Forward
+from pyEIT.pyeit.eit.utils import eit_scan_lines
+import pyEIT.pyeit.eit.bp as bp
+import cv2
+
+print("███████████████████████████████████████████████████████████") 
+print("███████████████████████████████████████████████████████████") 
+print("███████   E I T           H I T           1 . 0     ███████") 
+print("███████████████████████████████████████████████████████████") 
+print("███████████████████████████████████████████████████████████\n") 
+
+#Choose number of electrodes
+el_input = None 
+while el_input not in ("8", "16"): 
+    el_input = input("Please type how many electrodes you wish to work with: '8' or '16'\n") 
+    if el_input == "8": 
+         el_num = 8 
+         resolution = 0.06
+    elif el_input == "16": 
+         el_num = 16
+         resolution = 0.05 #The lower the number, the higher resolution BUT A LOT OF RAM IS NEEDED.
+    else: 
+    	 print("Please enter either 8 or 16.") 
+
+#accessed Pylance
+step = 1 #for mesh creation
+
+#def
+def getstr():
+    bytedata = ser.readline(1)
+    strnumber = str(bytedata[0])  
+    return strnumber   
+def fixer():
+    print("ESC occurred")
+    time.sleep(1)
+    print("Prepering the file...")
+    time.sleep(1)
+    with open(filenamestr, "r") as f:
+        file_contents = f.read()
+        file_contents = file_contents.replace("128","\n")
+        file_contents = file_contents.replace("208 7","")
+        file_contents = file_contents.replace("     "," ")
+        file_contents = file_contents.replace("    "," ")
+        file_contents = file_contents.replace("   "," ")
+        file_contents = file_contents.replace("  "," ")
+    a=open(filenamestr,"w+")
+    a.write(file_contents)
+    fd=open(filenamestr,"r")
+    a.close()
+    d=fd.read()
+    fd.close()
+    m=d.split("\n")
+    s="\n".join(m[:-1])
+    fd=open(filenamestr,"w+")
+    for i in range(len(s)):
+      fd.write(s[i])
+    fd.close()  
+def serial_ports():
+    if sys.platform.startswith('win'):
+        ports = ['COM%s' % (i + 1) for i in range(256)]
+    elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
+        # this excludes your current terminal "/dev/tty"
+        ports = glob.glob('/dev/tty[A-Za-z]*')
+    elif sys.platform.startswith('darwin'):
+        ports = glob.glob('/dev/tty.*')
+    else:
+        raise EnvironmentError('Unsupported platform')
+
+    result = []
+    for port in ports:
+        try:
+            s = serial.Serial(port)
+            s.close()
+            result.append(port)
+        except (OSError, serial.SerialException):
+            pass
+    return result
+def vidmaker():
+    print("Creating a video...")
+    time.sleep(0.5)
+    image_folder = picspath + "/" + filenamestrfolder + "/"
+    video_name = filenamestrfolder + ' - video.avi'
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    images = [img for img in os.listdir(image_folder) if img.endswith(".jpg")]
+    frame = cv2.imread(os.path.join(image_folder, images[0]))
+    height, width, layers = frame.shape
+    video = cv2.VideoWriter(video_name, fourcc, 10, (width, height)) #cv2.VideoWriter(, ,FPS,). Here you choose the Frames Per Second (FPS) rate for original video.
+    for image in images:
+        video.write(cv2.imread(os.path.join(image_folder, image)))
+    cv2.destroyAllWindows()
+    video.release()
+    print("Done")
+    time.sleep(0.5)
+    yn = None 
+    while yn not in ("yes", "no"): 
+        yn = input("Do you wish to open it now? type 'yes' or 'no'\n(in case you type yes: when the video is over, CLICK 'q' TO EXIT)\n") 
+        if yn == "yes":
+            cap = cv2.VideoCapture(video_name)
+            frame_period = 100  #100msec - assume frame rate is about 10Hz. Here you choose how long the each frame should last (speed up or slow down the video)
+            while(True):
+                ret, frame = cap.read()
+                if ret:
+                    cv2.imshow('frame', frame)
+                if cv2.waitKey(frame_period) & 0xFF == ord('q'):
+                    break
+        elif yn == "no": 
+            exit()
+        else: 
+            print("Please type either yes or no.") 
+def tomography():
+    #Create mesh
+    el_dist = 1
+    #step = 1
+    ex_mat = eit_scan_lines(el_num, el_dist)
+    mesh_obj, el_pos = mesh.create(el_num, h0=resolution) #h0 = initial mesh size | https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5595150/
+
+    pts = mesh_obj["node"]
+    tri = mesh_obj["element"]
+
+    #Load data files
+    file0 = open(ref, "r")
+    file1 = open(filenamestr, "r") 
+    line_count0 = 0
+    line_count1 = 0
+    for line in file0:
+        if line != "\n":
+            line_count0 += 1
+    file0.close()
+
+    for line in file1:
+        if line != "\n":
+            line_count1 += 1
+    file1.close()
+
+    print("\nThere are " + str(line_count0) + " lines inside the reference file.")
+    print("There are " + str(line_count1) + " lines inside the tested file.\n")
+
+    x0 = np.loadtxt(ref)
+    x1 = np.loadtxt(filenamestr) 
+
+    rms0 = x0[:,::2] + x0[:,1::2]*256 
+    rms1 = x1[:,::2] + x1[:,1::2]*256 
+
+    v0 = np.mean(rms0, axis=0)
+    v1 = np.mean(rms1, axis=0)
+
+    plt.figure(figsize=(12,4))
+    plt.plot(rms0.T,'b', alpha=0.05)
+    plt.plot(rms1.T,'r', alpha=0.05)
+    plt.plot(v0,'o-b')
+    plt.plot(v1,'o-r')
+    plt.show()
+
+    #Compute the EIT
+    os.makedirs(picspath + "/" + filenamestrfolder,exist_ok=True)
+    os.chdir(picspath + "/" + filenamestrfolder)
+    plt.rcParams.update({'figure.max_open_warning': 0})
+    eit = bp.BP(mesh_obj, el_pos, ex_mat=ex_mat, step=1, parser="std")
+    eit.setup(weight="none")
+    print("Creating pictures...")
+    fig = plt.figure(figsize=(10, 10))
+    for i in range(0, line_count1): #https://freshrimpsushi.github.io/posts/solution-for-fail-to-create-pixmap-with-tk_getpixmap-in-tkimgphotoinstancesetsize-error/
+        ds = eit.solve(v0, rms1[i,:], normalize=True)
+        plt.tripcolor(pts[:, 0], pts[:, 1], tri, ds, cmap='hot')
+        plt.axis("equal")
+        plt.colorbar()
+        plt.savefig('output'+str(i)+'.jpg')
+        plt.clf()
+    print("Finished")
+    time.sleep(0.5)
+    print("Creating a video of the current tomogrphy")
+    time.sleep(0.5)
+    vidmaker()
+
+#How to start
+filenamestrfolderVideo = os.getcwd()
+ans = None   
+while ans not in ("1", "2"): 
+    ans = input("\nPlease select the method you wish to do:\ntype '1' to create a file, scan and do a tomography (an option).\nType '2' for tomography only.\n") 
+    if ans == "1": 
+         continue 
+    elif ans == "2": #Option 2
+         mainpath = os.getcwd()
+         os.chdir(mainpath + '\scans')
+         picspath = (os.getcwd() + '\pics')
+         ref = None  
+         ref = input("\nPlease enter the reference file's name\n")
+         ref = ref + '.txt'
+         filenamestr = None  
+         filenamestr = input("\nPlease enter the file's name you wish you check\n")
+         filenamestrfolder = filenamestr
+         filenamestr = filenamestr + '.txt'
+         tomography()
+         exit()
+    else: 
+    	 print("\nPlease enter either 1 or 2.") 
+
+#Option 1
+#Relocate the folder
+time.sleep(0.5)
+os.getcwd()
+mainpath = os.getcwd()
+#print("The main folder is: " + mainpath) #if you have problems, use this line
+#os.chdir(mainpath + '\Desktop\Danny_PIE') #if you have problems, use this line (edit the path to yours)
+print("\nThe location of pyEIT folder for installation, is located at: " + os.getcwd())
+time.sleep(0.5)
+
+#Choose a port
+print("\n")
+ports = serial.tools.list_ports.comports()
+for port, desc, hwid in sorted(ports):
+        print("{}: {} [{}]".format(port, desc, hwid))
+print("\n")
+questions = [
+  inquirer.List('port',
+                message="Which port do you want to use?",
+               choices=serial_ports(),
+           ),]
+
+#Making a connection
+answers = inquirer.prompt(questions)
+Port = answers["port"]
+#Port = "COM3" #In case you have problems, use this line with the right COMX (X refers to a number) instead of the upper line
+ser = serial.Serial(Port,460800) #Defines a connection
+print("The port", ser.port, "made a connection") 
+time.sleep(0.5)
+print("Creating a new file")
+time.sleep(0.5)
+
+#Making a new file
+filenamestr = str(datetime.datetime.now().date()) + ' ' + str(datetime.datetime.now().time()).replace(':', '.')#Name the file
+filenamestrfolder = filenamestr
+filenamestr = filenamestr + '.txt'
+os.chdir(mainpath + '\scans')
+picspath = (os.getcwd() + '\pics')
+a=open(filenamestr,"w+") #Creating the file
+
+#Scan Loop
+i = 1
+print("Ready to read data from serial connection")
+time.sleep(0.5)
+print("Click on ESC to finish the scan")
+time.sleep(0.5)
+print("Scanning...")
+while i:
+    temp = getstr()
+    if temp == "128": #When 128 arrives the software starts to record
+        while True:
+            data = ser.readline(1) #(!for list() or int.from_bytes only!) - Change the value inside the readline() to print and write in a file. Relevant values - 1-128. 1 is the default.
+            RawData = struct.unpack("B", data)[0]
+            a.write(str(RawData)+" ") #writes the data
+            #a.flush() # flushes the internal buffer. Use this if the data doesn't organized as it should inside the text file after the fixer()
+            if msvcrt.kbhit():
+                if ord(msvcrt.getch()) == 27:
+                    a.close()
+                    fixer()
+                    time.sleep(0.5)
+                    print("Done\n")
+                    time.sleep(0.5)
+                    i = 0
+                    break
+
+#Reference and close or continue to tomography
+answer = None   
+while answer not in ("yes", "no"): 
+    answer = input("If you wish to continue type 'yes'. If you don't, type 'no'\n") 
+    if answer == "yes": 
+         continue 
+    elif answer == "no": 
+         exit() 
+    else: 
+    	 print("Please enter yes or no.") 
+
+ref = input("What is the REFERENCE file's name? wrong file name will lead to an error\n")
+if(ref != ""):
+   print("%s was selected as a reference file" %ref)
+   ref = ref + '.txt'
+tomography()
